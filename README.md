@@ -3,6 +3,7 @@ myMusicDownloader
 Required:  
 [soundcloud](https://github.com/soundcloud/soundcloud-python)  
 [lame](http://lame.sourceforge.net/)  
+python 2.7
 
 Past Versions:  
 V0.1 downloads songs through tracks/  

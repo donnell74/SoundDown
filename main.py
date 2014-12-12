@@ -4,6 +4,7 @@ import wget
 import os
 import shutil
 import subprocess
+import sys
 from mutagen import File
 from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
@@ -16,7 +17,7 @@ class Downloader:
         self.client = soundcloud.Client(client_id="e54975908f6d3073657a1a66b654f79a")
         self.client_str = "?client_id=e54975908f6d3073657a1a66b654f79a"
         self.past_songs_db = open("past_songs.db", 'r+')
-        self.past_songs_db_data = [line.strip() for line in self.past_songs_db.readlines()]
+        self.past_songs_db_data = [(line.strip(), "") for line in self.past_songs_db.readlines()]
 
 
     def get_track_filename(self, url = None):
@@ -27,14 +28,19 @@ class Downloader:
         return wget.filename_from_headers(headers)
 
 
-    def move_tracks_to_music_folder(self ):
+    def move_tracks_to_music_folder(self):
         """Moves all tracks in the current folder to the ~/Music/ folder"""
         home = os.path.expanduser("~")
         dest = home + "/Music/"
-        for each_file in self.past_songs_db_data:
+        for each_file, artist in self.past_songs_db_data:
+            sub_folder = artist + "/" if artist != "" else "" 
+            # possible race condition
+            if not os.path.exists(dest + sub_folder):
+                os.makedirs(dest + sub_folder)
+
             if os.path.isfile(each_file) and \
                not os.path.isfile(dest + each_file): 
-                shutil.move(each_file, dest)
+                shutil.move(each_file, dest + sub_folder)
 
 
     def set_track_metadata(self, track = None, filename = None, url = None):
@@ -52,42 +58,49 @@ class Downloader:
             else:
                 return None
 
-            print filename
 
         # Set title
         try:
             meta = ID3(filename)
         except ID3NoHeaderError:
-            meta = File(filename, easy=True)
-            meta.add_tags()
-            meta.save()
-            meta = ID3(filename)
+            try:
+                meta = File(filename, easy=True)
+                meta.add_tags()
+                meta.save()
+                meta = ID3(filename)
+            except:
+                return
+        except IOError:
+            return
 
-        meta.add(TIT2(encoding=3, text=track.title))
-        meta.add(TCON(encoding=3, text=track.genre))
-        meta.add(TCOM(encoding=3, text=track.user["username"]))
-        meta.save()
-
-        artwork_filename = wget.download(track.artwork_url)
-
-        audio = MP3(filename, ID3=ID3)
-
-        # add ID3 tag if it doesn't exist
         try:
-            audio.add_tags()
-        except error:
-            pass
+            meta.add(TIT2(encoding=3, text=track.title))
+            meta.add(TCON(encoding=3, text=track.genre))
+            meta.add(TCOM(encoding=3, text=track.user["username"]))
+            meta.save()
 
-        audio.tags.add(
-            APIC(
-                encoding=3, # 3 is for utf-8
-                mime='image/jpeg', # image/jpeg or image/png
-                type=3, # 3 is for the cover image
-                desc=u'Cover',
-                data=open(artwork_filename).read()
+            artwork_filename = wget.download(track.artwork_url)
+
+            audio = MP3(filename, ID3=ID3)
+
+            # add ID3 tag if it doesn't exist
+            try:
+                audio.add_tags()
+            except error:
+                pass
+
+            audio.tags.add(
+                APIC(
+                    encoding=3, # 3 is for utf-8
+                    mime='image/jpeg', # image/jpeg or image/png
+                    type=3, # 3 is for the cover image
+                    desc=u'Cover',
+                    data=open(artwork_filename).read()
+                )
             )
-        )
-        audio.save()
+            audio.save()
+        except:
+            return 
 
 
     def download_track(self, track = None, url = None):
@@ -101,16 +114,23 @@ class Downloader:
 
         print "Filename found: " + filename
         
-        if filename in self.past_songs_db_data and \
-           not os.path.isfile(filename): 
+        if (filename, track.user["username"]) in self.past_songs_db_data or \
+           (filename, "") in self.past_songs_db_data or \
+           os.path.isfile(filename): 
             print "File exists"
         else:
             print "Downloading"
             filename = wget.download(url)
             self.set_track_metadata(track, filename, url)
+            mp3_name = filename[:-4] + ".mp3"
 
             # Save filename for future reference
             self.past_songs_db.write(filename + "\n")
+            self.past_songs_db_data.append((filename, track.user["username"]))
+    
+            if not filename.endswith(".mp3"):
+                self.past_songs_db.write(mp3_name + "\n")
+                self.past_songs_db_data.append((mp3_name, track.user["username"]))
     
         print
 
@@ -138,23 +158,20 @@ class Downloader:
             cmd = 'lame --preset insane "%s"' % filename
             subprocess.call(cmd, shell=True)
 
-            # add the mp3 to the db
-            self.past_songs_db_data.append(mp3_name)
-            self.past_songs_db.write(mp3_name + "\n")
 
         return mp3_name
 
 
     def all_wav_to_mp3(self):
         """Convert all .wav files to .mp3 files in the current folder"""
-        for each_file in self.past_songs_db_data:
+        for each_file, artist in self.past_songs_db_data:
             self.convert_wav_to_mp3(each_file)
 
 
     def delete_leftovers(self):
         """Remove all leftover songs that could not be moved over
            because we already had a copy of it somehow"""
-        for each_file in self.past_songs_db_data:
+        for each_file, artist in self.past_songs_db_data:
             if os.path.isfile(each_file): 
                 os.remove(each_file)
                 print "Deleted " + each_file
@@ -177,8 +194,10 @@ class Downloader:
         self.past_songs_db.close()
 
     def main(self):
-        self.download_free_tracks_by_search(query='dubstep', limit=30)
-        self.cleanup()
+        try:
+            self.download_free_tracks_by_search(query='dubstep', limit=75)
+        finally:
+            self.cleanup()
 
 
 if __name__ == "__main__":
